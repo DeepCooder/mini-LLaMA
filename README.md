@@ -1,2 +1,2 @@
 # mini-LLaMA
-Create a mini-LLaMA from scratch
+Create a mini-LLaMA2 from scratch
