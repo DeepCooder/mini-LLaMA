@@ -11,13 +11,14 @@ import torch.nn.functional as F
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f'running on {device}')
 
+# -----------------Model Struction---------------------
 @dataclass
 class ModelArgs:
     # Model struct params
     dim: int = 512
     n_layers: int = 6
     n_heads: int = 8
-    n_kv_heads: Optional[int] = None # for Group-query head 
+    n_kv_heads: Optional[int] = None # for Grouped-query attention 
     vocab_size: int = None  # set in data preparation stage
     norm_eps: float = 1e-5
 
@@ -30,7 +31,7 @@ class ModelArgs:
     learning_rate:float = 1e-4
 
     #Inference params
-    inference:bool = False
+    inference:bool = None
 
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -284,7 +285,7 @@ class Transformer(nn.Module):
         
 
 
-# Data preparation
+# -----------------Data Preparation---------------------
 args = ModelArgs()
 with open('shakspere.txt', 'r', encoding='utf-8') as f:
   text = f.read()
@@ -330,8 +331,6 @@ def estimate_loss():
         out[split] = losses.mean()
     model.train()
     return out
-
-
 
 
 model = Transformer(args).to(device)
