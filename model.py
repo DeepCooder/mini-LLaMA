@@ -143,8 +143,8 @@ class SelfAttention(nn.Module):
 
         # For inference
         if self.args.inference:
-        xk = torch.cat([xk, self.k_cache], dim=1) if self.k_cache.numel() else xk
-        xv = torch.cat([xv, self.v_cache], dim=1) if self.v_cache.numel() else xv
+            xk = torch.cat([xk, self.k_cache], dim=1) if self.k_cache.numel() else xk
+            xv = torch.cat([xv, self.v_cache], dim=1) if self.v_cache.numel() else xv
 
         # (B, Seq_KV, H_KV, Head_Dim) --> (B, Seq_KV, H_Q, Head_Dim)
         keys = repeat_kv(xk, self.n_rep)
@@ -186,103 +186,105 @@ class FeedForward(nn.Module):
         return x
 
 class EncoderBlock(nn.Module):
-  def __init__(self, args: ModelArgs):
-      super().__init__()
-      self.n_heads = args.n_heads
-      self.dim = args.dim
-      self.head_dim = args.dim // args.n_heads
+    def __init__(self, args: ModelArgs):
+        super().__init__()
 
-      self.attention = SelfAttention(args)
-      self.feed_forward = FeedForward(args)
+        self.n_heads = args.n_heads
+        self.dim = args.dim
+        self.head_dim = args.dim // args.n_heads
 
-      # Normalization BEFORE the attention block
-      self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
-      # Normalization BEFORE the feed forward block
-      self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        self.attention = SelfAttention(args)
+        self.feed_forward = FeedForward(args)
 
-  def forward(self, x: torch.Tensor, freqs_complex: torch.Tensor, start_pos:int):
-      # (B, Seq_Len, Dim) + (B, Seq_Len, Dim) --> (B, Seq_Len, Dim)
-      h = x + self.attention.forward(
+        # Normalization BEFORE the attention block
+        self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        # Normalization BEFORE the feed forward block
+        self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+
+    def forward(self, x: torch.Tensor, freqs_complex: torch.Tensor, start_pos:int):
+        # (B, Seq_Len, Dim) + (B, Seq_Len, Dim) --> (B, Seq_Len, Dim)
+        h = x + self.attention.forward(
           self.attention_norm(x), freqs_complex, start_pos
-      )
-      # (B, Seq_Len, Dim) + (B, Seq_Len, Dim) --> (B, Seq_Len, Dim)
-      out = h + self.feed_forward.forward(self.ffn_norm(h))
-      return out
+        )
+        # (B, Seq_Len, Dim) + (B, Seq_Len, Dim) --> (B, Seq_Len, Dim)
+        out = h + self.feed_forward.forward(self.ffn_norm(h))
+        return out
 
 class Transformer(nn.Module):
-  def __init__(self, args: ModelArgs):
-      super().__init__()
+    def __init__(self, args: ModelArgs):
+        super().__init__()
 
-      assert args.vocab_size != -1, "Vocab size must be set"
+        assert args.vocab_size != -1, "Vocab size must be set"
 
-      self.args = args
-      self.vocab_size = args.vocab_size
-      self.n_layers = args.n_layers
-      self.tok_embeddings = nn.Embedding(self.vocab_size, args.dim)
+        self.args = args
+        self.vocab_size = args.vocab_size
+        self.n_layers = args.n_layers
+        self.tok_embeddings = nn.Embedding(self.vocab_size, args.dim)
 
-      self.layers = nn.ModuleList([EncoderBlock(args) for _ in range(self.n_layers)])
+        self.layers = nn.ModuleList([EncoderBlock(args) for _ in range(self.n_layers)])
 
-      self.norm = RMSNorm(args.dim, eps=args.norm_eps)
-      self.output = nn.Linear(args.dim, self.vocab_size, bias=False)
+        self.norm = RMSNorm(args.dim, eps=args.norm_eps)
+        self.output = nn.Linear(args.dim, self.vocab_size, bias=False)
 
-      self.freqs_complex = None
+        self.freqs_complex = None
 
-  def forward(self, tokens: torch.Tensor, start_pos:int=None):
+    def forward(self, tokens: torch.Tensor, start_pos:int=None):
+        # (B, Seq_Len) -> (B, Seq_Len, Dim)
+        h = self.tok_embeddings(tokens)
 
-      # (B, Seq_Len) -> (B, Seq_Len, Dim)
-      h = self.tok_embeddings(tokens)
+        # Retrieve the pairs (m, theta) corresponding to the start_pos positions
+        freqs_complex = self.freqs_complex[start_pos:start_pos + 1, :] if args.inference else self.freqs_complex
 
-      # Retrieve the pairs (m, theta) corresponding to the start_pos positions
-      freqs_complex = self.freqs_complex[start_pos:start_pos + 1, :] if args.inference else self.freqs_complex
+        # Consecutively apply all the encoder layers
+        for layer in self.layers:
+            h = layer(h, freqs_complex, start_pos)
+        h = self.norm(h)
+        output = self.output(h).float()
 
-      # Consecutively apply all the encoder layers
-      for layer in self.layers:
-          h = layer(h, freqs_complex, start_pos)
-      h = self.norm(h)
-      output = self.output(h).float()
+        return output
 
-      return output
+    def trainer(self):
+        args.inference = False
+        self.freqs_complex = precompute_theta_pos_frequencies(self.args.dim // self.args.n_heads, self.args.seq_size)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.args.learning_rate)
+        total_iter = tqdm(range(self.args.total_iters))
 
-  def trainer(self):
-      args.inference = False
-      self.freqs_complex = precompute_theta_pos_frequencies(self.args.dim // self.args.n_heads, self.args.seq_size)
-      optimizer = torch.optim.AdamW(self.parameters(), lr=self.args.learning_rate)
-      total_iter = tqdm(range(self.args.total_iters))
+        for i in total_iter:
+            x, y = get_batch('train')
+            y_pre = self(x)
+            B, S, C = y_pre.shape
+            loss = F.cross_entropy(y_pre.view(B*S, C), y.view(B*S))
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-      for i in total_iter:
-          x, y = get_batch('train')
-          y_pre = self(x)
-          B, S, C = y_pre.shape
-          loss = F.cross_entropy(y_pre.view(B*S, C), y.view(B*S))
-          optimizer.zero_grad()
-          loss.backward()
-          optimizer.step()
+            if i % self.args.iters_interval == 0 or i == self.args.total_iters - 1:
+                losses = estimate_loss()
+                print(f"The traning loss:{losses['train']:.2f}, val_loss: {losses['val']:.2f}")
 
-          if i % self.args.iters_interval == 0 or i == self.args.total_iters - 1:
-              losses = estimate_loss()
-              print(f"The traning loss:{losses['train']:.2f}, val_loss: {losses['val']:.2f}")
+    @torch.no_grad()
+    def generater(self, context:str, max_token:int=128):
+        args.inference = True
+        self.freqs_complex = precompute_theta_pos_frequencies(self.args.dim // self.args.n_heads, max_token)
+        context_toekns = encode(context)
+        context_len = len(context_toekns)
+        out_token = None
+        generated_toekns = []
 
-  @torch.no_grad()
-  def generater(self, context:str, max_token:int=128):
-    args.inference = True
-    self.freqs_complex = precompute_theta_pos_frequencies(self.args.dim // self.args.n_heads, max_token)
-    context_toekns = encode(context)
-    context_len = len(context_toekns)
-    out_token = None
-    generated_toekns = []
-
-    for token_pos in range(max_token):
-      if token_pos < context_len:
-        next_token = torch.tensor(context_toekns[token_pos]).view(1,1)
-      else:
-        next_token = out_token
-      out_logit = self(next_token.to(device), token_pos)
-      out_token = Multinomial(logits=out_logit).sample().argmax(dim=-1)
-      generated_toekns.append(out_token.item())
-    text = decode(context_toekns + generated_toekns[context_len:])
-    print(text)
+        for token_pos in range(max_token):
+            if token_pos < context_len:
+                next_token = torch.tensor(context_toekns[token_pos]).view(1,1)
+            else:
+                next_token = out_token
+            out_logit = self(next_token.to(device), token_pos)
+            out_token = Multinomial(logits=out_logit).sample().argmax(dim=-1)
+            generated_toekns.append(out_token.item())
+        text = decode(context_toekns + generated_toekns[context_len:])
+        print(text)
+        
 
 
+# Data preparation
 args = ModelArgs()
 with open('shakspere.txt', 'r', encoding='utf-8') as f:
   text = f.read()
@@ -305,13 +307,13 @@ val_data = data[n:]
 
 # data loading
 def get_batch(split):
-  # generate a small batch of data of inputs x and targets y
-  data = train_data if split == 'train' else val_data
-  ix = torch.randint(0, len(data) - args.seq_size, (args.batch_size,))
-  x = torch.stack([data[i:i+args.seq_size] for i in ix])
-  y = torch.stack([data[i+1:i+args.seq_size+1] for i in ix])
-  x, y = x.to(device), y.to(device)
-  return x, y
+    # generate a small batch of data of inputs x and targets y
+    data = train_data if split == 'train' else val_data
+    ix = torch.randint(0, len(data) - args.seq_size, (args.batch_size,))
+    x = torch.stack([data[i:i+args.seq_size] for i in ix])
+    y = torch.stack([data[i+1:i+args.seq_size+1] for i in ix])
+    x, y = x.to(device), y.to(device)
+    return x, y
 
 @torch.no_grad()
 def estimate_loss():
@@ -328,3 +330,10 @@ def estimate_loss():
         out[split] = losses.mean()
     model.train()
     return out
+
+
+
+
+model = Transformer(args).to(device)
+model.trainer()
+model.generater('You', 128)
